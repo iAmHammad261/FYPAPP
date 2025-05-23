@@ -2,9 +2,10 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import BottomSheet, { BottomSheetView } from '@gorhom/bottom-sheet';
 import { Video } from 'expo-av';
 import * as ImagePicker from 'expo-image-picker'; // Used as namespace
-import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router'; // Added useLocalSearchParams and useFocusEffect
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Dimensions,
   FlatList,
@@ -15,63 +16,52 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { Swipeable } from 'react-native-gesture-handler'; // Import Swipeable
 
 const LOG_PREFIX = '[APP_DEBUG]';
 
+// IMPORTANT: For development only. In production, manage API keys securely (e.g., via a backend).
+const GEMINI_API_KEY = "AIzaSyCsmF-JaxHYhjMxvldGjXSLbS4zlUch-mA"; // User-provided API key
+
 const { width: screenWidth } = Dimensions.get('window');
-const CARD_WIDTH = screenWidth * 0.69;
+const CARD_WIDTH = screenWidth * 0.66; 
 const CARD_MARGIN_HORIZONTAL_PER_SIDE = (screenWidth - CARD_WIDTH) / 2 / 2;
+const SNAP_INTERVAL = CARD_WIDTH + (CARD_MARGIN_HORIZONTAL_PER_SIDE * 2); 
 
-// --- NEW UI COLORS ---
 const darkThemeColors = {
-    background: '#1A1D21',         // Dark cool slate
-    surface: '#26292E',            // Slightly lighter slate for cards, bottom sheets, headers
-    primaryText: '#EAEAEA',        // Off-white, good readability
-    secondaryText: '#9E9E9E',      // Muted gray for less emphasis
-    accent: '#00ACC1',             // A vibrant cyan/teal (Used for active Translate button bg, active card border)
-    cardBorder: '#373A3F',         // Subtle border for cards, headers
-    iconColor: '#B0BEC5',          // Muted icon color (blue-gray) for general icons (e.g., AddCard, error overlays, info icon)
-    bottomSheetBackground: '#212327', // Darker than surface for depth
-    bottomSheetButton: '#373A3F',     // Background for bottom sheet buttons
-    bottomSheetButtonText: '#EAEAEA', // Text and Icon color for bottom sheet buttons (including delete)
-
+    background: '#1A1D21',
+    surface: '#26292E',
+    primaryText: '#EAEAEA',
+    secondaryText: '#9E9E9E',
+    accent: '#00ACC1',
+    cardBorder: '#373A3F',
+    iconColor: '#B0BEC5',
+    bottomSheetBackground: '#212327',
+    bottomSheetButton: '#373A3F',
+    bottomSheetButtonText: '#EAEAEA',
     statusBar: 'light-content',
     errorOverlayBackground: 'rgba(0,0,0,0.75)',
     errorOverlayText: '#FFFFFF',
-
-    // Specific button states / types
-    deleteButtonBackground: '#D32F2F', // Destructive Red for delete button background
-
-    // TranslateButton specific theming
-    translateButtonActiveBackground: '#00ACC1', // Same as accent
-    translateButtonActiveText: '#FFFFFF',       // White text on accent background
-    translateButtonActiveIcon: '#FFFFFF',       // White icon on accent background
-
-    translateButtonDisabledBackground: '#424242', // Darker, muted background for disabled translate button
-    translateButtonDisabledText: '#757575',       // Muted text for disabled translate button
-    translateButtonDisabledIcon: '#757575',       // Muted icon for disabled translate button
-
-    playIconColor: 'rgba(255, 255, 255, 0.9)', // For video play icon overlay (kept highly visible)
+    deleteButtonBackground: '#D32F2F',
+    translateButtonActiveBackground: '#00ACC1',
+    translateButtonActiveText: '#FFFFFF',
+    translateButtonActiveIcon: '#FFFFFF',
+    translateButtonDisabledBackground: '#424242',
+    translateButtonDisabledText: '#757575',
+    translateButtonDisabledIcon: '#757575',
+    playIconColor: 'rgba(255, 255, 255, 0.9)',
+    regenerateButtonBackground: 'transparent', 
+    regenerateButtonIconColor: '#EAEAEA', 
 };
 
-
-// const APP_HEADER_CONTENT_HEIGHT = 50; // No longer directly used for header height
 const IOS_STATUS_BAR_HEIGHT = 44; 
 const ANDROID_STATUS_BAR_HEIGHT = RNStatusBar.currentHeight || 24; 
 
-
-// --- VideoCard Component ---
+// --- VideoCard Component (no changes) ---
 const VideoCard = React.memo(({ item, isActive, onVideoPress, onLongPressOpenSheet }) => {
     const videoRef = useRef(null);
     const [hasError, setHasError] = useState(false);
     const [playbackStatus, setPlaybackStatus] = useState({});
-
-    useEffect(() => {
-        // console.log(`${LOG_PREFIX} HomeScreen VideoCard MOUNTED for item ${item.id}`);
-        return () => {
-            // console.log(`${LOG_PREFIX} HomeScreen VideoCard UNMOUNTED for item ${item.id}`);
-        };
-    }, [item.id]);
 
     useEffect(() => {
         if (item.uri) setHasError(false); 
@@ -127,7 +117,7 @@ const VideoCard = React.memo(({ item, isActive, onVideoPress, onLongPressOpenShe
     );
 });
 
-// --- AddCard Component ---
+// --- AddCard Component (no changes) ---
 const AddCard = React.memo(({ onPress }) => (
     <TouchableOpacity style={[styles.card, styles.addCard, styles.cardTouchable]} onPress={onPress} activeOpacity={0.7}>
         <MaterialIcons name="add-circle-outline" size={70} color={darkThemeColors.iconColor} />
@@ -135,7 +125,7 @@ const AddCard = React.memo(({ onPress }) => (
     </TouchableOpacity>
 ));
 
-// --- TranslateButton Component ---
+// --- TranslateButton Component (no changes) ---
 const TranslateButton = ({ onPress, disabled }) => (
     <TouchableOpacity
         style={[
@@ -162,6 +152,29 @@ const TranslateButton = ({ onPress, disabled }) => (
     </TouchableOpacity>
 );
 
+// --- Helper function to format sentence with bolded words ---
+const formatBoldedSentence = (sentence, wordsToBold) => {
+    if (!sentence || !wordsToBold || wordsToBold.length === 0) {
+        return <Text style={styles.sentenceCardText}>{sentence || ''}</Text>;
+    }
+    const regex = new RegExp(`\\b(${wordsToBold.map(word => word.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')).join('|')})\\b`, 'gi');
+    const parts = sentence.split(regex);
+
+    return (
+        <Text style={styles.sentenceCardText}>
+            {parts.map((part, index) => {
+                const isBold = wordsToBold.some(boldWord => boldWord.toLowerCase() === part.toLowerCase());
+                return isBold ? (
+                    <Text key={index} style={styles.boldTextInSentence}>{part}</Text>
+                ) : (
+                    part
+                );
+            })}
+        </Text>
+    );
+};
+
+
 export default function HomeScreen() {
     const router = useRouter();
     const params = useLocalSearchParams();
@@ -174,6 +187,15 @@ export default function HomeScreen() {
     const [translations, setTranslations] = useState({});
     const [currentPredictedGloss, setCurrentPredictedGloss] = useState('---');
     const [isProcessingAll, setIsProcessingAll] = useState(false);
+
+    const [predictedSentence, setPredictedSentence] = useState('');
+    const [isFetchingSentence, setIsFetchingSentence] = useState(false);
+    const [sentenceError, setSentenceError] = useState(null);
+    const [inputGlossesForSentence, setInputGlossesForSentence] = useState([]); 
+    const [lastDisplayedSentence, setLastDisplayedSentence] = useState(''); // Keep track of last shown sentence
+    
+    const swipeableRowRef = useRef(null);
+
 
     const setVideos = useCallback((updater) => _setVideos(prev => typeof updater === 'function' ? updater(prev) : updater), []);
     const setActiveVideoId = useCallback((updater) => _setActiveVideoId(prev => typeof updater === 'function' ? updater(prev) : updater), []);
@@ -194,13 +216,153 @@ export default function HomeScreen() {
         ];
     }, [videos]);
 
+    const getItemLayout = useCallback((data, index) => ({
+        length: SNAP_INTERVAL,
+        offset: SNAP_INTERVAL * index,
+        index,
+    }), []); 
+
+    const fetchPredictedSentence = async (glossesArray) => {
+        if (!glossesArray || glossesArray.length === 0 || glossesArray.every(g => !g || g === "---" || g.startsWith("Error:") || g === "Processing...")) {
+            setSentenceError("Please wait for valid words or try translating first.");
+            setIsFetchingSentence(false);
+            setPredictedSentence('');
+            setInputGlossesForSentence([]);
+            return;
+        }
+        if (!GEMINI_API_KEY) {
+            console.error("Gemini API Key is missing.");
+            setSentenceError("API Key is missing. Cannot fetch sentence.");
+            setIsFetchingSentence(false);
+            setPredictedSentence('');
+            setInputGlossesForSentence([]);
+            return;
+        }
+        
+        const validGlosses = glossesArray.filter(g => g && g !== "---" && !g.startsWith("Error:") && g !== "Processing...");
+        if (validGlosses.length === 0) {
+             setSentenceError("No valid words to form a sentence.");
+            setIsFetchingSentence(false);
+            setPredictedSentence('');
+            setInputGlossesForSentence([]);
+            return;
+        }
+
+        setInputGlossesForSentence(validGlosses); 
+        console.log(`${LOG_PREFIX} Fetching sentence for words: ${validGlosses.join(', ')}`);
+        setIsFetchingSentence(true);
+        // Don't clear predictedSentence here, so we can compare with the new ones
+        setSentenceError(null);
+
+        const prompt = `A deaf person has communicated using the following sequence of sign language words: "${validGlosses.join(' ')}".
+Your primary task is to generate a single, natural, and contextually relevant sentence that this person might use.
+The sentence should be clear and concise.
+If generating multiple candidates (as requested by the API call's 'candidateCount' parameter), aim to provide slight variations in phrasing or sentence structure for each candidate, while still adhering to the core meaning and the user's likely intent.
+CRITICAL INSTRUCTION FOR EACH CANDIDATE: Your response for each candidate MUST contain ONLY the generated sentence and nothing else. Do not include any introductory phrases, explanations, apologies, numbered lists, or any text other than the single sentence itself.
+Sentence:`;
+        
+        const chatHistory = [{ role: "user", parts: [{ text: prompt }] }];
+        
+        const payload = {
+            contents: chatHistory,
+            generationConfig: {
+                temperature: 0.95, 
+                topK: 50,      
+                topP: 0.95,    
+                candidateCount: 8
+            }
+        };
+        
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
+
+        try {
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const responseData = await response.json();
+            if (!response.ok) {
+                const errorDetail = responseData?.error?.message || `API error ${response.status}`;
+                throw new Error(errorDetail);
+            }
+
+            const candidateSentences = [];
+            if (responseData.candidates && responseData.candidates.length > 0) {
+                responseData.candidates.forEach(candidate => {
+                    if (candidate.content && candidate.content.parts && candidate.content.parts.length > 0) {
+                        const text = candidate.content.parts[0].text;
+                        if (text) {
+                            candidateSentences.push(text.trim());
+                        }
+                    }
+                });
+            }
+
+            let uniqueSentences = [...new Set(candidateSentences)];
+
+            if (uniqueSentences.length > 0) {
+                let newSentence = '';
+                if (uniqueSentences.length === 1) {
+                    newSentence = uniqueSentences[0];
+                } else {
+                    // Try to pick a sentence different from the last displayed one
+                    const differentSentences = uniqueSentences.filter(s => s !== lastDisplayedSentence);
+                    if (differentSentences.length > 0) {
+                        const randomIndex = Math.floor(Math.random() * differentSentences.length);
+                        newSentence = differentSentences[randomIndex];
+                    } else {
+                        // All unique sentences are the same as the last one, just pick randomly from unique
+                        const randomIndex = Math.floor(Math.random() * uniqueSentences.length);
+                        newSentence = uniqueSentences[randomIndex];
+                    }
+                }
+                setPredictedSentence(newSentence);
+                setLastDisplayedSentence(newSentence); // Update last displayed sentence
+                console.log(`${LOG_PREFIX} Received ${candidateSentences.length} candidates, ${uniqueSentences.length} unique, selected one: ${newSentence}`);
+            } else {
+                 if (responseData.promptFeedback && responseData.promptFeedback.blockReason) {
+                    console.error("Gemini API response blocked:", responseData.promptFeedback.blockReason, responseData.promptFeedback.safetyRatings);
+                    throw new Error(`Sentence generation blocked: ${responseData.promptFeedback.blockReason}. Please try different words.`);
+                } else if (responseData.candidates && responseData.candidates.length > 0 && responseData.candidates[0].finishReason === "SAFETY") {
+                     console.error("Gemini API response blocked due to safety:", responseData.candidates[0].safetyRatings);
+                    throw new Error("Sentence generation blocked due to safety reasons. Please try different words.");
+                }
+                throw new Error("No valid sentences received from API, or response structure was unexpected.");
+            }
+        } catch (error) {
+            console.error('Error fetching predicted sentence:', error);
+            setSentenceError(error.message || "Failed to fetch sentence.");
+        } finally {
+            setIsFetchingSentence(false);
+        }
+    };
+    
+    const handleSwipeOpen = () => {
+        console.log("Swipe opened, fetching sentence.");
+        const glossesToUse = videos
+            .map(video => translations[video.id])
+            .filter(gloss => gloss && gloss !== "---" && !gloss.startsWith("Error:") && gloss !== "Processing...");
+        if (glossesToUse.length > 0) {
+            fetchPredictedSentence(glossesToUse);
+        } else {
+            setSentenceError("No translated words available to form a sentence.");
+            setPredictedSentence('');
+            setInputGlossesForSentence([]);
+        }
+    };
+
+    const handleSwipeClose = () => {
+        console.log("Swipe closed");
+    };
+
+
     useFocusEffect(
         useCallback(() => {
             const { newVideoUri, newVideoId } = params;
             if (typeof newVideoUri === 'string' && typeof newVideoId === 'string') {
                 console.log(`${LOG_PREFIX} Received new video from recorder: ID=${newVideoId}, URI=${newVideoUri}`);
                 const newVideo = { id: newVideoId, uri: newVideoUri };
-                
                 setVideos(prevVideos => {
                     if (!prevVideos.find(v => v.id === newVideo.id)) {
                         return [...prevVideos, newVideo];
@@ -214,7 +376,7 @@ export default function HomeScreen() {
 
     const handleOpenAddVideoSheet = useCallback(() => addVideoBottomSheetRef.current?.snapToIndex(1), []);
     const handleCloseAddVideoSheet = useCallback(() => addVideoBottomSheetRef.current?.close(), []);
-    const handleAddVideoSheetChanges = useCallback(() => { /* console.log('Add video sheet changed'); */ }, []);
+    const handleAddVideoSheetChanges = useCallback(() => {}, []);
     const handleOpenVideoActionSheet = useCallback((videoItem) => setActionableVideo(videoItem), [setActionableVideo]);
     const handleCloseVideoActionSheet = useCallback(() => { videoActionBottomSheetRef.current?.close(); }, []);
 
@@ -278,7 +440,7 @@ export default function HomeScreen() {
             console.error(`${LOG_PREFIX} Exception during fetch for ${videoId}:`, error.message);
             setTranslations(prev => ({ ...prev, [videoId]: 'Fetch Exception' }));
         }
-    }, [/* setTranslations is stable */]);
+    }, []);
 
     const handleTranslateAllVideos = useCallback(async () => {
         if (isProcessingAll) return;
@@ -288,7 +450,7 @@ export default function HomeScreen() {
         }
         console.log(`${LOG_PREFIX} Starting translation for all ${videos.length} videos.`);
         setIsProcessingAll(true);
-        setCurrentPredictedGloss("Processing all videos...");
+        setCurrentPredictedGloss("Processing all videos..."); 
 
         const fetchPromises = videos.map(video => {
             if (video.uri && (!translations[video.id] || ['Translation Error', 'No URI', 'Invalid Response', 'Fetch Exception'].includes(translations[video.id]))) {
@@ -310,7 +472,7 @@ export default function HomeScreen() {
         }
     }, [videos, translations, isProcessingAll, videoInFocusId, fetchGlossForSingleVideo]);
 
-    useEffect(() => {
+    useEffect(() => { 
         if (videoInFocusId) {
             const gloss = translations[videoInFocusId];
             if (gloss && !['Translation Error', 'No URI', 'Invalid Response', 'Fetch Exception'].includes(gloss)) {
@@ -333,6 +495,7 @@ export default function HomeScreen() {
             setCurrentPredictedGloss("---");
         }
     }, [videoInFocusId, translations, isProcessingAll, videos]);
+
 
     const handleSelectVideo = async () => {
         handleCloseAddVideoSheet();
@@ -418,6 +581,27 @@ export default function HomeScreen() {
         return null;
     }, [activeVideoId, onVideoPress, handleOpenVideoActionSheet, handleOpenAddVideoSheet]);
     
+    const renderRightActions = () => (
+        <View style={styles.sentenceCardContainer}>
+            <View style={styles.sentenceCardHeaderView}>
+                <Text style={styles.sentenceCardTitle}>Predicted Sentence</Text>
+                <TouchableOpacity 
+                    style={styles.regenerateButton} 
+                    onPress={() => fetchPredictedSentence(inputGlossesForSentence)} 
+                    disabled={isFetchingSentence || inputGlossesForSentence.length === 0}
+                >
+                    <MaterialIcons name="refresh" size={24} color={darkThemeColors.regenerateButtonIconColor} />
+                </TouchableOpacity>
+            </View>
+            <View style={styles.sentenceContent}>
+                {isFetchingSentence && <ActivityIndicator size="small" color={darkThemeColors.accent} style={{ marginVertical: 10 }} />}
+                {!isFetchingSentence && sentenceError && <Text style={styles.sentenceErrorText}>{sentenceError}</Text>}
+                {!isFetchingSentence && !sentenceError && predictedSentence && formatBoldedSentence(predictedSentence, inputGlossesForSentence)}
+                {!isFetchingSentence && !sentenceError && !predictedSentence && <Text style={styles.sentenceCardText}>Swipe to generate or try different words.</Text>}
+            </View>
+        </View>
+    );
+
     if (flatListData === undefined) {
         console.error(`${LOG_PREFIX} flatListData IS UNDEFINED just before render!`);
         return <View style={styles.container}><Text style={{color: darkThemeColors.primaryText}}>Loading or Error...</Text></View>;
@@ -440,10 +624,12 @@ export default function HomeScreen() {
                 showsHorizontalScrollIndicator={false}
                 contentContainerStyle={styles.flatListContentContainer}
                 decelerationRate="fast"
-                snapToInterval={CARD_WIDTH + (CARD_MARGIN_HORIZONTAL_PER_SIDE * 2)} 
-                snapToAlignment="center"
+                snapToInterval={SNAP_INTERVAL} 
+                snapToAlignment="start"
                 onViewableItemsChanged={onViewableItemsChanged}
                 viewabilityConfig={viewabilityConfig}
+                disableIntervalMomentum={true} 
+                getItemLayout={getItemLayout} 
                 extraData={{ activeId: activeVideoId, focusId: videoInFocusId, translationsHash: JSON.stringify(translations) }}
                 windowSize={7} 
                 initialNumToRender={3}
@@ -456,7 +642,7 @@ export default function HomeScreen() {
                         const isActiveDot = video.id === videoInFocusId;
                         return (
                             <View
-                                key={`dot-${video.id}`} // Ensure unique key for dots
+                                key={`dot-${video.id}`} 
                                 style={[
                                     styles.dot,
                                     isActiveDot ? styles.dotActive : styles.dotInactive
@@ -469,10 +655,24 @@ export default function HomeScreen() {
 
             <TranslateButton onPress={handleTranslateAllVideos} disabled={isProcessingAll} />
 
-            <View style={styles.translationContainer}>
-                <Text style={styles.translationTitle}>Translated Word</Text>
-                <Text style={styles.translationGloss} numberOfLines={2} ellipsizeMode="tail">{currentPredictedGloss}</Text>
-            </View>
+            <Swipeable
+                ref={swipeableRowRef}
+                renderRightActions={renderRightActions}
+                onSwipeableWillOpen={handleSwipeOpen}
+                onSwipeableWillClose={handleSwipeClose}
+                rightThreshold={40} 
+                friction={1.5} 
+                containerStyle={styles.swipeableContainer} 
+            >
+                <View style={styles.translationContainer}>
+                    <View style={styles.translationHeaderContainer}>
+                        <Text style={styles.translationTitle}>Translated Word</Text>
+                        <MaterialIcons name="swipe-left" size={24} color={darkThemeColors.iconColor} />
+                    </View>
+                    <Text style={styles.translationGloss} numberOfLines={2} ellipsizeMode="tail">{currentPredictedGloss}</Text>
+                </View>
+            </Swipeable>
+
 
             <BottomSheet ref={addVideoBottomSheetRef} index={-1} snapPoints={addVideoSnapPoints} onChange={handleAddVideoSheetChanges} enablePanDownToClose handleComponent={null} backgroundStyle={styles.bottomSheetItselfBackground}>
                 <BottomSheetView style={styles.bottomSheetContentContainer}>
@@ -519,19 +719,18 @@ const styles = StyleSheet.create({
         color: darkThemeColors.primaryText,
     },
     flatList: { 
-        marginBottom: 5, 
+        marginBottom: 15, 
     },
     flatListContentContainer: { 
         paddingHorizontal: CARD_MARGIN_HORIZONTAL_PER_SIDE, 
         paddingTop: 20, 
-        paddingBottom: 10, 
+        paddingBottom: 5, 
     },
-    // Dot Indicator Styles
     dotContainer: {
         flexDirection: 'row',
         justifyContent: 'center',
         alignItems: 'center',
-        marginBottom: 20, // Space before TranslateButton
+        marginBottom: 15, 
     },
     dot: {
         width: 8,
@@ -546,7 +745,6 @@ const styles = StyleSheet.create({
     dotActive: {
         backgroundColor: darkThemeColors.accent,
     },
-    // End Dot Indicator Styles
     cardTouchable: {
         marginHorizontal: CARD_MARGIN_HORIZONTAL_PER_SIDE,
     },
@@ -614,7 +812,7 @@ const styles = StyleSheet.create({
         paddingVertical: 12, paddingHorizontal: 30, borderRadius: 25,
         alignSelf: 'center', 
         marginTop: 0, 
-        marginBottom: 20, 
+        marginBottom: 15, 
         elevation: 4,
         shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 3,
     },
@@ -626,24 +824,30 @@ const styles = StyleSheet.create({
         fontSize: 16,
         fontWeight: '600',
     },
-    translationContainer: {
+    swipeableContainer: { 
         marginHorizontal: 20,
-        marginTop: 0, 
-        marginBottom: Platform.OS === 'ios' ? 30 : 20,
+        marginBottom: 20, 
+        borderRadius: 10, 
+        overflow: 'hidden', 
+        borderWidth: 1, 
+        borderColor: darkThemeColors.cardBorder, 
+    },
+    translationContainer: { 
         padding: 15,
         backgroundColor: darkThemeColors.surface,
-        borderRadius: 10,
-        borderWidth: 1,
-        borderColor: darkThemeColors.cardBorder,
+        minHeight: 110, 
+    },
+    translationHeaderContainer: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
         alignItems: 'center',
-        minHeight: 80, 
-        justifyContent: 'center',
+        width: '100%',
+        marginBottom: 8,
     },
     translationTitle: {
         fontSize: 16, 
         fontWeight: '500',
         color: darkThemeColors.secondaryText,
-        marginBottom: 8,
     },
     translationGloss: {
         fontSize: 20,
@@ -651,6 +855,60 @@ const styles = StyleSheet.create({
         color: darkThemeColors.primaryText, 
         textAlign: 'center',
         minHeight: 25, 
+        width: '100%', 
+    },
+    sentenceCardContainer: { 
+        width: screenWidth - 40, 
+        minHeight: 110, 
+        padding: 15,
+        backgroundColor: darkThemeColors.surface, 
+        alignItems: 'center', 
+        flex: 1, 
+    },
+    sentenceCardHeaderView: { 
+        flexDirection: 'row',
+        alignItems: 'center',
+        width: '100%',
+        marginBottom: 10,
+        position: 'relative', 
+    },
+    sentenceCardTitle: {
+        fontSize: 16,
+        fontWeight: 'bold', 
+        color: darkThemeColors.secondaryText, 
+        textAlign: 'left', 
+        flex: 1, 
+        marginRight: 30, 
+    },
+    sentenceContent: { 
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+        width: '100%',
+    },
+    sentenceCardText: { 
+        fontSize: 17, 
+        color: darkThemeColors.primaryText,
+        textAlign: 'center',
+        lineHeight: 24, 
+    },
+    boldTextInSentence: {
+        fontWeight: 'bold',
+        color: darkThemeColors.accent, 
+    },
+    sentenceErrorText: {
+        fontSize: 16,
+        color: darkThemeColors.errorOverlayText, 
+        textAlign: 'center',
+    },
+    regenerateButton: {
+        position: 'absolute',
+        top: -5, 
+        right: -5, 
+        padding: 8, 
+        borderRadius: 25, 
+        backgroundColor: darkThemeColors.regenerateButtonBackground, 
+        zIndex: 1, 
     },
     bottomSheetItselfBackground: { 
         backgroundColor: darkThemeColors.bottomSheetBackground, 
